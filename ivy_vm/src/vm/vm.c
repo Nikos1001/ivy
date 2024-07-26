@@ -7,14 +7,19 @@ void vm_init(NetVM* vm) {
     for(u32 tid = 0; tid < N_THREADS; tid++) {
         vm->threads[tid] = (ThreadMem){
             .tid = tid,
+
             .pair_base = &vm->pair_buf[tid * PAIR_BLOCK_SIZE],
             .pair_curr = 0,
             .pair_cap = 0,
+
             .vars_base = &vm->vars_buf[tid * VARS_BLOCK_SIZE],
             .vars_curr = 0,
             .vars_cap = 0,
+
             .redx_base = &vm->redx_buf[tid * REDX_BLOCK_SIZE],
-            .redx_put = 0
+            .redx_put = 0,
+
+            .prdx_put = 0
         };
     }
 }
@@ -42,6 +47,32 @@ void vm_run(NetVM* vm) {
         fflush(stdout);
     }
 
+}
+
+// Converts a node to its index in various tables.
+// Converts SYM/F64 nodes to 8
+// Converts NIL to 9
+// Otherwise creates a 3 bit binary number from (node & NODE_F0), (node & NODE_F1), (node & NODE_F2)
+// In other words:
+//      VAR => 0
+//      CAL => 1
+//      CON => 2
+//      DUP => 3
+//      ERA => 4
+//      OPI => 5
+//      OPO => 6
+//      SWI => 7
+//      SYM => 8
+//      NIL => 9
+static inline u8 get_node_table_index(Node node) {
+    // TODO: maybe there's some clever bitmath that could make this branchless? Profile.
+    if(node == NODE_NIL) {
+        return 9;
+    } else if((node & QNAN) == QNAN) {
+        return (node & NODE_F2) >> 61 | (node & (NODE_F1 | NODE_F0)) >> 48;
+    } else {
+        return 8;
+    }
 }
 
 // ====== RESOURCE MANIPULATION ========
@@ -107,13 +138,40 @@ static inline u32 alloc_var(NetVM* vm, ThreadMem* mem) {
     }
 }
 
+static inline bool is_priority_pair(Node n0, Node n1) {
+    u8 n0_idx = get_node_table_index(n0);
+    u8 n1_idx = get_node_table_index(n1);
+    const bool is_priority[10][10] = {
+        //           VAR    CAL    CON    DUP    ERA    OPI    OPO    SWI    SYM    NIL 
+        /* VAR */ { true , true , true , true , true , true , true , true , true , true  },
+        /* CAL */ { true , false, false, false, false, false, false, false, false, true  },
+        /* CON */ { true , false, true , false, true , false, false, false, false, true  },
+        /* DUP */ { true , false, false, true , true , false, false, false, false, true  },
+        /* ERA */ { true , false, true , true , true , false, false, false, false, true  },
+        /* OPI */ { true , false, false, false, false, false, false, false, false, true  },
+        /* OPO */ { true , false, false, false, false, false, false, false, false, true  },
+        /* SWI */ { true , false, false, false, false, false, false, false, false, true  },
+        /* SYM */ { true , false, false, false, false, false, false, false, false, true  },
+        /* NIL */ { true , true , true , true , true , true , true , true , true , true  },
+    };
+    return is_priority[n0_idx][n1_idx];
+}
+
 static inline void push_redx(NetVM* vm, ThreadMem* mem, Node n0, Node n1) {
-    atomic_store_pair(&mem->redx_base[mem->redx_put], MAKE_PAIR(n0, n1));
-    mem->redx_put++; 
+    if(is_priority_pair(n0, n1)) {
+        mem->prdx[mem->prdx_put] = MAKE_PAIR(n0, n1);
+        mem->prdx_put++;
+    } else {
+        atomic_store_pair(&mem->redx_base[mem->redx_put], MAKE_PAIR(n0, n1));
+        mem->redx_put++; 
+    }
 }
 
 static inline Pair pop_redx(NetVM* vm, ThreadMem* mem) {
-    if(mem->redx_put > 0) {
+    if(mem->prdx_put > 0) {
+        mem->prdx_put--;
+        return mem->prdx[mem->prdx_put];
+    } else if(mem->redx_put > 0) {
         mem->redx_put--;
         return atomic_load_pair(&mem->redx_base[mem->redx_put]); 
     } else {
@@ -161,40 +219,18 @@ void dump_thread_state(ThreadMem* mem) {
 
 // ====== EXECUTION =========
 
-// Converts a node to its index in the interaction dispatch table.
-// Converts SYM/F64 nodes to 8
-// Converts NIL to 9
-// Otherwise creates a 3 bit binary number from (node & NODE_F0), (node & NODE_F1), (node & NODE_F2)
-// In other words:
-//      VAR => 0
-//      CAL => 1
-//      CON => 2
-//      DUP => 3
-//      ERA => 4
-//      OPI => 5
-//      OPO => 6
-//      SWI => 7
-//      SYM => 8
-//      NIL => 9
-static inline u8 get_node_interaction_table_index(Node node) {
-    if(node == NODE_NIL) {
-        return 9;
-    } else if((node & QNAN) == QNAN) {
-        return (node & NODE_F2) >> 61 | (node & (NODE_F1 | NODE_F0)) >> 48;
-    } else {
-        return 8;
-    }
-}
-
 void thread_run(NetVM* vm, ThreadMem* mem) {
 
-    void* dispatch_table[10][10] = {
+    // The VM uses computed goto for its rule dispatch
+    // The rule table fits in very nicely with the label lookup
+    // Not sure if this makes a big difference for performance, but I couldn't resist
+    const void* dispatch_table[10][10] = {
         //             VAR        CAL        CON        DUP        ERA        OPI        OPO        SWI        SYM        NIL 
         /* VAR */ { &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_halt },
         /* CAL */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* CON */ { &&do_link, &&do_void, &&do_anni, &&do_comm, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* DUP */ { &&do_link, &&do_void, &&do_comm, &&do_anni, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* ERA */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
+        /* CON */ { &&do_link, &&do_void, &&do_anni, &&do_comm, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
+        /* DUP */ { &&do_link, &&do_void, &&do_comm, &&do_anni, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
+        /* ERA */ { &&do_link, &&do_void, &&do_eras, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
         /* OPI */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
         /* OPO */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
         /* SWI */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
@@ -207,16 +243,16 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
     u8 n1_idx;
 
     #define DISPATCH() \
-        if(mem->redx_put == 0) \
+        if(mem->redx_put == 0 && mem->prdx_put == 0) \
             goto end; \
         redex = pop_redx(vm, mem); \
-        n0_idx = get_node_interaction_table_index(redex.n0); \
-        n1_idx = get_node_interaction_table_index(redex.n1); \
+        n0_idx = get_node_table_index(redex.n0); \
+        n1_idx = get_node_table_index(redex.n1); \
         atomic_fetch_add_explicit(&vm->interactions, 1, memory_order_relaxed); \
         goto *dispatch_table[n0_idx][n1_idx]; 
 
     #define ENSURE_REDX_SPACE(cnt) \
-        if(mem->redx_put > REDX_BLOCK_SIZE - cnt) { \
+        if(mem->redx_put > REDX_BLOCK_SIZE - cnt || mem->prdx_put > THREAD_PRDX_SIZE - cnt) { \
             out_of_redx_space(vm, mem); \
         }
 
@@ -282,16 +318,27 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
         u32 con0_pair = new_pair(vm, mem, NODE_VAR(v1), NODE_VAR(v3));
         u32 con1_pair = new_pair(vm, mem, NODE_VAR(v0), NODE_VAR(v2));
 
-        push_redx(vm, mem, pair0_mask | con1_pair, pair1.n1);
-
         push_redx(vm, mem, pair1_mask | dup0_pair, pair0.n0);
         push_redx(vm, mem, pair1_mask | dup1_pair, pair0.n1);
 
         push_redx(vm, mem, pair0_mask | con0_pair, pair1.n0);
+        push_redx(vm, mem, pair0_mask | con1_pair, pair1.n1);
 
         DISPATCH();
+    do_eras:
+        ENSURE_REDX_SPACE(2);
+
+        Node pair = NODE_IS_ERA(redex.n0) ? redex.n1 : redex.n0;
+        u64 pair_idx = pair & U48_MASK;
+
+        Pair to_erase = take_pair(vm, pair_idx);
+
+        // Optimization TODO: these are guaranteed to be high-priority, no need to check.
+        push_redx(vm, mem, NODE_ERA, to_erase.n0);
+        push_redx(vm, mem, NODE_ERA, to_erase.n1);
+        DISPATCH();
     do_halt:
-        while(true);
+        return;
     end:
 
     printf("THREAD %d COMPLETED REDUCTIONS\n", mem->tid);
