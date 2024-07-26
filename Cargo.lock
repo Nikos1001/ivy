@@ -3,5 +3,21 @@
 version = 3
 
 [[package]]
+name = "cc"
+version = "1.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2aba8f4e9906c7ce3c73463f62a7f0c65183ada1a2d47e397cc8810827f9694f"
+
+[[package]]
 name = "ivy"
 version = "0.1.0"
+dependencies = [
+ "ivy_vm",
+]
+
+[[package]]
+name = "ivy_vm"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
