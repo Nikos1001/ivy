@@ -6,6 +6,7 @@ fn main() {
     let _ = cc::Build::new()
         .file("src/vm/vm.c") 
         .file("src/vm/node.c") 
+        .file("src/vm/book.c") 
         .file("src/vm/run.c") 
         .try_compile("vm");
 

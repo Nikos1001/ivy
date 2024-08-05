@@ -5,19 +5,21 @@
 #include "common.h"
 #include "node.h"
 
+#define DEBUG_MODE
+
 #define THREAD_PRDX_SIZE (1ul << 16)
 
-typedef struct {
+typedef struct ThreadMem {
     u32 tid;
     pthread_t thread;
 
-    APair* pair_base;
-    u32    pair_curr;
-    u32    pair_cap;
+    u64 aux_curr;
+    u64 aux_last;
+    u64 aux_free[256];
 
-    ANode* vars_base; 
-    u32    vars_curr;
-    u32    vars_cap;
+    u64 var_curr; 
+    u64 var_last;
+    u64 var_free;
 
     APair* redx_base;
     u32    redx_put;
@@ -31,28 +33,28 @@ typedef struct {
     u32  prdx_put;
 } ThreadMem;
 
-#define VM_MAX_PAIR_POW2 30
-#define VM_MAX_VARS_POW2 30
+#define VM_MAX_AUX_POW2 30
+#define VM_MAX_VAR_POW2 30
 #define VM_MAX_REDX_POW2 30
-#define VM_MAX_PAIR   (1ul << VM_MAX_PAIR_POW2)
-#define VM_MAX_VARS   (1ul << VM_MAX_VARS_POW2)
+#define VM_MAX_AUX   (1ul << VM_MAX_AUX_POW2)
+#define VM_MAX_VAR   (1ul << VM_MAX_VAR_POW2)
 #define VM_MAX_REDX   (1ul << VM_MAX_REDX_POW2)
 
 #define N_THREADS_POW2 3
 #define N_THREADS (1 << N_THREADS_POW2)
 
-#define PAIR_BLOCK_SIZE_POW2 (VM_MAX_PAIR_POW2 - N_THREADS_POW2)
-#define PAIR_BLOCK_SIZE (1ul << PAIR_BLOCK_SIZE_POW2) 
+#define AUX_BLOCK_SIZE_POW2 (VM_MAX_AUX_POW2 - N_THREADS_POW2)
+#define AUX_BLOCK_SIZE (1ul << AUX_BLOCK_SIZE_POW2) 
 
-#define VARS_BLOCK_SIZE_POW2 (VM_MAX_VARS_POW2 - N_THREADS_POW2)
-#define VARS_BLOCK_SIZE (1ul << VARS_BLOCK_SIZE_POW2)
+#define VAR_BLOCK_SIZE_POW2 (VM_MAX_VAR_POW2 - N_THREADS_POW2)
+#define VAR_BLOCK_SIZE (1ul << VAR_BLOCK_SIZE_POW2)
 
 #define REDX_BLOCK_SIZE_POW2 (VM_MAX_REDX_POW2 - N_THREADS_POW2)
 #define REDX_BLOCK_SIZE (1ul << REDX_BLOCK_SIZE_POW2)
 
-typedef struct {
-    APair pair_buf[VM_MAX_PAIR];
-    ANode vars_buf[VM_MAX_VARS];
+typedef struct NetVM {
+    Node  aux_buf[VM_MAX_AUX];
+    ANode var_buf[VM_MAX_VAR];
     APair redx_buf[VM_MAX_REDX];
 
     ThreadMem threads[N_THREADS];
@@ -64,5 +66,13 @@ void vm_init(NetVM* vm);
 void vm_run(NetVM* vm);
 
 void thread_run(NetVM* vm, ThreadMem* mem);
+
+Aux alloc_aux(NetVM* vm, ThreadMem* mem, u64 size);
+Node* get_aux(NetVM* vm, Aux aux);
+void free_aux(NetVM* vm, ThreadMem* mem, Aux aux);
+
+u64 alloc_var(NetVM* vm, ThreadMem* mem);
+
+void push_redx(NetVM* vm, ThreadMem* mem, Node n0, Node n1);
 
 #endif

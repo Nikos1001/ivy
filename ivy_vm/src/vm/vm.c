@@ -1,26 +1,31 @@
 
 #include "vm.h"
 
+#define INITIAL_PAIR_CAPACITY 128
+
 void vm_init(NetVM* vm) {
     atomic_store_explicit(&vm->interactions, 0, memory_order_relaxed);
 
-    for(u32 tid = 0; tid < N_THREADS; tid++) {
+    for(u64 tid = 0; tid < N_THREADS; tid++) {
         vm->threads[tid] = (ThreadMem){
             .tid = tid,
 
-            .pair_base = &vm->pair_buf[tid * PAIR_BLOCK_SIZE],
-            .pair_curr = 0,
-            .pair_cap = 0,
+            .aux_curr = tid * AUX_BLOCK_SIZE,
+            .aux_last = (tid + 1) * AUX_BLOCK_SIZE,
 
-            .vars_base = &vm->vars_buf[tid * VARS_BLOCK_SIZE],
-            .vars_curr = 0,
-            .vars_cap = 0,
+            .var_curr = tid * VAR_BLOCK_SIZE,
+            .var_last = (tid + 1) * VAR_BLOCK_SIZE, 
+            .var_free = UINT64_MAX,
 
             .redx_base = &vm->redx_buf[tid * REDX_BLOCK_SIZE],
             .redx_put = 0,
 
             .prdx_put = 0
         };
+
+        for(u32 i = 0; i < 256; i++) {
+            vm->threads[tid].aux_free[i] = UINT64_MAX;
+        }
     }
 }
 
@@ -75,67 +80,57 @@ static inline u8 get_node_table_index(Node node) {
     }
 }
 
+// ====== VM ERRORS =========
+
+void vm_panic(NetVM* vm, ThreadMem* mem, const char* msg) {
+    fprintf(stderr, "VM FATAL ERROR: %s\n", msg);
+    fprintf(stderr, "THREAD ID: %d\n", mem->tid);
+    exit(-1);
+}
+
 // ====== RESOURCE MANIPULATION ========
 
-// TODO: this might potentially error
-// TODO: replace the spin-alloc system with some kind of atomic free-chain to prevent memory explosion
-static inline u32 new_pair(NetVM* vm, ThreadMem* mem, Node n0, Node n1) {
-    while(true) {
-
-        if(mem->pair_curr == mem->pair_cap) {
-            atomic_store_explicit(&mem->pair_base[mem->pair_curr].n0, n0, memory_order_relaxed);
-            atomic_store_explicit(&mem->pair_base[mem->pair_curr].n1, n1, memory_order_relaxed);
-            mem->pair_cap++;
-            mem->pair_curr++;
-            return mem->tid * PAIR_BLOCK_SIZE + (mem->pair_curr - 1);
-        }
-
-        // We check n0 because it is the one that is set to NODE_NIL first in take_pair. Should prevent data races.
-        if(atomic_load_explicit(&mem->pair_base[mem->pair_curr].n0, memory_order_relaxed) == NODE_NIL) {
-            atomic_store_explicit(&mem->pair_base[mem->pair_curr].n0, n0, memory_order_relaxed);
-            atomic_store_explicit(&mem->pair_base[mem->pair_curr].n1, n1, memory_order_relaxed);
-            mem->pair_curr++;
-            return mem->tid * PAIR_BLOCK_SIZE + (mem->pair_curr - 1);
-        }
-
-        mem->pair_curr++;
-        // Works because PAIR_BLOCK_SIZE is guaranteed to be a power of 2
-        mem->pair_curr &= PAIR_BLOCK_SIZE - 1;
-
+// Allocates an aux block of a given size
+Aux alloc_aux(NetVM* vm, ThreadMem* mem, u64 size) {
+    if(mem->aux_free[size - 1] != UINT64_MAX) {
+        u64 block = mem->aux_free[size - 1];
+        mem->aux_free[size - 1] = vm->aux_buf[block];
+        return MAKE_AUX(size, block);
     }
+
+    mem->aux_curr += size;
+    if(mem->aux_curr > mem->aux_last) {
+        vm_panic(vm, mem, "AUX SPACE EXHAUSTED");
+    }
+
+    return MAKE_AUX(size, mem->aux_curr - size);
 }
 
-static inline Pair take_pair(NetVM* vm, u64 idx) {
-    Node n0 = atomic_exchange_explicit(&vm->pair_buf[idx].n0, NODE_NIL, memory_order_relaxed);
-    Node n1 = atomic_exchange_explicit(&vm->pair_buf[idx].n1, NODE_NIL, memory_order_relaxed);
-    return MAKE_PAIR(n0, n1);
+Node* get_aux(NetVM* vm, Aux aux) {
+    return &vm->aux_buf[AUX_BEGIN(aux)];
 }
 
-// TODO: this might potentially error
-// TODO: replace the spin-alloc system with some kind of atomic free-chain to prevent memory explosion
-static inline u32 alloc_var(NetVM* vm, ThreadMem* mem) {
-    while(true) {
+void free_aux(NetVM* vm, ThreadMem* mem, Aux aux) {
+    u64 size = AUX_SIZE(aux);
+    u64 begin = AUX_BEGIN(aux);
+    vm->aux_buf[begin] = mem->aux_free[size - 1];
+    mem->aux_free[size - 1] = begin; 
+}
 
-        if(mem->vars_curr == mem->vars_cap) {
-            u32 var_idx = mem->vars_curr + mem->tid * VARS_BLOCK_SIZE;
-            atomic_store_explicit(&vm->vars_buf[var_idx], NODE_VAR(var_idx), memory_order_relaxed);
-            mem->vars_curr++;
-            mem->vars_cap++;
-            return var_idx;
-        }
-
-        if(atomic_load_explicit(&mem->vars_base[mem->vars_curr], memory_order_relaxed) == NODE_NIL) {
-            u32 var_idx = mem->vars_curr + mem->tid * VARS_BLOCK_SIZE;
-            atomic_store_explicit(&vm->vars_buf[var_idx], NODE_VAR(var_idx), memory_order_relaxed);
-            mem->vars_curr++;
-            return var_idx;
-        }
-
-        mem->vars_cap++;
-        // Works because VARS_BLOCK_SIZE is guaranteed to be a power of 2
-        mem->vars_cap &= VARS_BLOCK_SIZE - 1;
-
+u64 alloc_var(NetVM* vm, ThreadMem* mem) {
+    if(mem->var_free != UINT64_MAX) {
+        u64 var = mem->var_free;
+        mem->var_free = atomic_load_explicit(&vm->var_buf[var], memory_order_relaxed);
+        atomic_store_explicit(&vm->var_buf[var], NODE_VAR(var), memory_order_relaxed);
+        return var;
+    } 
+    if(mem->var_curr == mem->var_last) {
+        vm_panic(vm, mem, "VAR SPACE EXHAUSTED");
     }
+    mem->var_curr++;
+    u64 var = mem->var_curr - 1;
+    atomic_store_explicit(&vm->var_buf[var], NODE_VAR(var), memory_order_relaxed);
+    return var;
 }
 
 static inline bool is_priority_pair(Node n0, Node n1) {
@@ -157,7 +152,7 @@ static inline bool is_priority_pair(Node n0, Node n1) {
     return is_priority[n0_idx][n1_idx];
 }
 
-static inline void push_redx(NetVM* vm, ThreadMem* mem, Node n0, Node n1) {
+void push_redx(NetVM* vm, ThreadMem* mem, Node n0, Node n1) {
     if(is_priority_pair(n0, n1)) {
         mem->prdx[mem->prdx_put] = MAKE_PAIR(n0, n1);
         mem->prdx_put++;
@@ -179,32 +174,23 @@ static inline Pair pop_redx(NetVM* vm, ThreadMem* mem) {
     }
 }
 
-// ====== VM ERRORS =========
-
-void out_of_redx_space(NetVM* vm, ThreadMem* mem) {
-    fprintf(stderr, "VM FATAL ERROR: REDX SPACE EXHAUSTED\n");
-    fprintf(stderr, "THREAD ID: %d\n", mem->tid);
-    exit(-1);
-}
-
 // ====== DEBUG =============
 
-void dump_thread_state(ThreadMem* mem) {
-    
-    // Dump pairs
-    printf("====== PAIRS ======\n");
-    for(u32 i = 0; i < 10; i++) {
+void dump_thread_state(NetVM* vm, ThreadMem* mem) {
+    printf("====== AUX  ======\n");
+    for(u64 i = 0; i < 16; i++) {
         printf("%03d | ", i);
-        dump_node(atomic_load_explicit(&mem->pair_base[i].n0, memory_order_relaxed));
-        printf("\n    | ");
-        dump_node(atomic_load_explicit(&mem->pair_base[i].n1, memory_order_relaxed));
-        printf("\n");
+        dump_node(vm->aux_buf[i]);
+        printf("\n"); 
     }
-    printf("====== VARS  ======\n");
-    for(u32 i = 0; i < 10; i++) {
-        printf("%03d | ", i);
-        dump_node(mem->vars_base[i]);
-        printf("\n");
+    printf("====== PRDX ======\n");
+    for(i32 i = mem->prdx_put - 1; i >= 0; i--) {
+        Pair redx = mem->prdx[i];
+        printf("[ ");
+        dump_node(redx.n0);
+        printf(" ]\t[ ");
+        dump_node(redx.n1);
+        printf(" ]\n");
     }
     printf("====== REDX ======\n");
     for(i32 i = mem->redx_put - 1; i >= 0; i--) {
@@ -215,6 +201,7 @@ void dump_thread_state(ThreadMem* mem) {
         dump_node(redx.n1);
         printf(" ]\n");
     }
+    printf("\n");
 }
 
 // ====== EXECUTION =========
@@ -253,15 +240,22 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
 
     #define ENSURE_REDX_SPACE(cnt) \
         if(mem->redx_put > REDX_BLOCK_SIZE - cnt || mem->prdx_put > THREAD_PRDX_SIZE - cnt) { \
-            out_of_redx_space(vm, mem); \
+            vm_panic(vm, mem, "REDEX SPACE EXHAUSTED"); \
         }
 
     DISPATCH();
 
-    u64 pair0_idx; 
-    u64 pair1_idx;
-    Pair pair0;
-    Pair pair1;
+    u64 aux_size;
+    u64 aux0_size;
+    u64 aux1_size;
+
+    Aux aux;
+    Aux aux0;
+    Aux aux1;
+
+    Node* aux_nodes;
+    Node* aux0_nodes;
+    Node* aux1_nodes;
 
     do_void:
         DISPATCH();
@@ -274,74 +268,111 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
             swap_nodes(&var, &val);
         }
 
-        u32 var_idx = NODE_GET_VAR_IDX(var);
+        u64 var_idx = NODE_GET_VAR_IDX(var);
         Node var_node = NODE_VAR(var_idx);
 
-        if(!atomic_compare_exchange_strong_explicit(&vm->vars_buf[var_idx], &var_node, val, memory_order_relaxed, memory_order_relaxed)) {
-            Node other_val = atomic_exchange_explicit(&vm->vars_buf[var_idx], NODE_NIL, memory_order_relaxed);
+        if(!atomic_compare_exchange_strong_explicit(&vm->var_buf[var_idx], &var_node, val, memory_order_relaxed, memory_order_relaxed)) {
+            Node other_val = atomic_exchange_explicit(&vm->var_buf[var_idx], mem->var_free, memory_order_relaxed);
+            mem->var_free = var_idx;
             push_redx(vm, mem, val, other_val);
         }
 
         DISPATCH();
-    do_anni:
-        ENSURE_REDX_SPACE(2);
+    do_anni: 
+        aux0 = redex.n0 & U48_MASK;
+        aux1 = redex.n1 & U48_MASK;
 
-        pair0_idx = redex.n0 & U48_MASK;
-        pair1_idx = redex.n1 & U48_MASK;
-        pair0 = take_pair(vm, pair0_idx);
-        pair1 = take_pair(vm, pair1_idx);
+        aux_size = AUX_SIZE(aux0);
 
-        push_redx(vm, mem, pair0.n0, pair1.n0);
-        push_redx(vm, mem, pair0.n1, pair1.n1);
+        #ifdef DEBUG_MODE
+        aux1_size = AUX_SIZE(aux1);
+        if(aux_size != aux1_size) {
+            vm_panic(vm, mem, "ANNIHILATION AUX SIZES ARE NOT THE SAME");
+        }
+        #endif
+
+        ENSURE_REDX_SPACE(aux_size);
+
+        aux0_nodes = get_aux(vm, aux0); 
+        aux1_nodes = get_aux(vm, aux1); 
+
+        for(u64 i = 0; i < aux_size; i++) {
+            push_redx(vm, mem, aux0_nodes[i], aux1_nodes[i]);
+        }
+
+        free_aux(vm, mem, aux0);
+        free_aux(vm, mem, aux1);
 
         DISPATCH();
     do_comm:
-        ENSURE_REDX_SPACE(4);
+        aux0 = redex.n0 & U48_MASK;
+        aux0_size = AUX_SIZE(aux0);
 
-        pair0_idx = redex.n0 & U48_MASK;
-        pair1_idx = redex.n1 & U48_MASK;
+        aux1 = redex.n1 & U48_MASK;
+        aux1_size = AUX_SIZE(aux1);
 
-        u64 pair0_mask = redex.n0 & NODE_TAG_MASK;
-        u64 pair1_mask = redex.n1 & NODE_TAG_MASK;
+        ENSURE_REDX_SPACE(aux0_size + aux1_size);
 
-        pair0 = take_pair(vm, pair0_idx);
-        pair1 = take_pair(vm, pair1_idx);
+        aux0_nodes = get_aux(vm, aux0);
+        aux1_nodes = get_aux(vm, aux1);
 
-        u32 v0 = alloc_var(vm, mem);
-        u32 v1 = alloc_var(vm, mem);
-        u32 v2 = alloc_var(vm, mem);
-        u32 v3 = alloc_var(vm, mem);
+        u64 n0_mask = redex.n0 & NODE_TAG_MASK;
+        u64 n1_mask = redex.n1 & NODE_TAG_MASK;
 
-        u32 dup0_pair = new_pair(vm, mem, NODE_VAR(v1), NODE_VAR(v0));
-        u32 dup1_pair = new_pair(vm, mem, NODE_VAR(v3), NODE_VAR(v2));
+        u64 vars[256][256];
+        for(u64 i = 0; i < aux0_size; i++) {
+            for(u64 j = 0; j < aux1_size; j++) {
+                vars[i][j] = alloc_var(vm, mem);
+            }
+        }
 
-        u32 con0_pair = new_pair(vm, mem, NODE_VAR(v1), NODE_VAR(v3));
-        u32 con1_pair = new_pair(vm, mem, NODE_VAR(v0), NODE_VAR(v2));
+        for(u64 i = 0; i < aux0_size; i++) {
+            aux = alloc_aux(vm, mem, aux1_size);
+            aux_nodes = get_aux(vm, aux);
+            for(u64 j = 0; j < aux1_size; j++) {
+                aux_nodes[j] = NODE_VAR(vars[i][j]);
+            }
+            Node n = n1_mask | aux;
+            push_redx(vm, mem, n, aux0_nodes[i]);
+        }
 
-        push_redx(vm, mem, pair1_mask | dup0_pair, pair0.n0);
-        push_redx(vm, mem, pair1_mask | dup1_pair, pair0.n1);
+        for(u64 i = 0; i < aux1_size; i++) {
+            aux = alloc_aux(vm, mem, aux0_size);
+            aux_nodes = get_aux(vm, aux);
+            for(u64 j = 0; j < aux0_size; j++) {
+                aux_nodes[j] = NODE_VAR(vars[j][i]);
+            }
+            Node n = n0_mask | aux;
+            push_redx(vm, mem, n, aux1_nodes[i]);
+        }
 
-        push_redx(vm, mem, pair0_mask | con0_pair, pair1.n0);
-        push_redx(vm, mem, pair0_mask | con1_pair, pair1.n1);
+        free_aux(vm, mem, aux0);
+        free_aux(vm, mem, aux1);
 
         DISPATCH();
     do_eras:
-        ENSURE_REDX_SPACE(2);
+        if(NODE_IS_ERA(redex.n0)) {
+            swap_nodes(&redex.n0, &redex.n1);
+        }
 
-        Node pair = NODE_IS_ERA(redex.n0) ? redex.n1 : redex.n0;
-        u64 pair_idx = pair & U48_MASK;
+        aux = redex.n0 & U48_MASK;
 
-        Pair to_erase = take_pair(vm, pair_idx);
+        aux_size = AUX_SIZE(aux);
+        aux_nodes = get_aux(vm, aux);
 
-        // Optimization TODO: these are guaranteed to be high-priority, no need to check.
-        push_redx(vm, mem, NODE_ERA, to_erase.n0);
-        push_redx(vm, mem, NODE_ERA, to_erase.n1);
+        ENSURE_REDX_SPACE(aux_size);
+
+        for(u64 i = 0; i < aux_size; i++) {
+            push_redx(vm, mem, aux_nodes[i], NODE_ERA);
+        }
+
+        free_aux(vm, mem, aux);
+
         DISPATCH();
     do_halt:
         return;
     end:
 
-    printf("THREAD %d COMPLETED REDUCTIONS\n", mem->tid);
     fflush(stdout);
 
 }

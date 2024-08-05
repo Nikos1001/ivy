@@ -1,29 +1,19 @@
 
 #include "vm.h"
+#include "book.h"
 
-void run() {
+void run(Book* book) {
 
     NetVM* vm = malloc(sizeof(NetVM));
     vm_init(vm);
-    atomic_store_explicit(&vm->pair_buf[0].n0, NODE_VAR(0), memory_order_relaxed);
-    atomic_store_explicit(&vm->pair_buf[0].n1, NODE_ERA, memory_order_relaxed);
-    atomic_store_explicit(&vm->pair_buf[1].n0, NODE_ERA, memory_order_relaxed);
-    atomic_store_explicit(&vm->pair_buf[1].n1, NODE_VAR(0), memory_order_relaxed);
 
-    atomic_store_explicit(&vm->vars_buf[0], NODE_VAR(0), memory_order_relaxed);
-
-    atomic_store_explicit(&vm->redx_buf[0].n0, NODE_CON(0), memory_order_relaxed);
-    atomic_store_explicit(&vm->redx_buf[0].n1, NODE_DUP(1), memory_order_relaxed);
-
-    vm->threads[0].pair_curr = 2;
-    vm->threads[0].pair_cap = 2;
-    vm->threads[0].vars_curr = 1;
-    vm->threads[0].vars_cap = 1;
-    vm->threads[0].redx_put = 1;
+    u64 out_var_idx = alloc_var(vm, &vm->threads[0]);
+    Node out = instance_def(vm, &vm->threads[0], book, &book->defs[0]);
+    push_redx(vm, &vm->threads[0], NODE_VAR(out_var_idx), out);
 
     vm_run(vm);
-    // thread_run(vm, &vm->threads[0]);
 
     printf("INTERACTIONS: %llu\n", atomic_load_explicit(&vm->interactions, memory_order_relaxed));
+    printf("%g\n", vm->var_buf[out_var_idx]);
     
 }

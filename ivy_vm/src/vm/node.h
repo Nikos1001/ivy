@@ -19,6 +19,11 @@ typedef struct {
 
 #define MAKE_PAIR(n0, n1) ((Pair){(n0), (n1)})
 
+typedef u64 Aux;
+#define MAKE_AUX(size, begin) ((((u64)size - 1) << 40) | (begin))
+#define AUX_SIZE(aux) ((((aux) >> 40) & 0xFF) + 1)
+#define AUX_BEGIN(aux) ((aux) & ((1ul << 40) - 1))
+
 #define QNAN     ((u64)0x7ffc000000000000)
 #define U62_MASK ((u64)0x3FFFFFFFFFFFFFFF)
 #define U48_MASK ((u64)0x0000FFFFFFFFFFFF)
@@ -38,11 +43,11 @@ typedef struct {
 #define NODE_IS_CAL(node)   (((node) & NODE_TAG_MASK) == NODE_CAL_TAG)
 
 #define NODE_CON_TAG        (QNAN | NODE_F1)
-#define NODE_CON(pair)      (NODE_CON_TAG | (pair))
+#define NODE_CON(aux)      (NODE_CON_TAG | (aux))
 #define NODE_IS_CON(node)   (((node) & NODE_TAG_MASK) == NODE_CON_TAG)
 
 #define NODE_DUP_TAG        (QNAN | NODE_F0 | NODE_F1)
-#define NODE_DUP(pair)      (NODE_DUP_TAG | (pair))
+#define NODE_DUP(aux)       (NODE_DUP_TAG | (aux))
 #define NODE_IS_DUP(node)   (((node) & NODE_TAG_MASK) == NODE_DUP_TAG)
 
 #define NODE_ERA_TAG        (QNAN | NODE_F2)
@@ -50,7 +55,7 @@ typedef struct {
 #define NODE_IS_ERA(node)   (node == NODE_ERA) 
 
 #define NODE_OPI_TAG        (QNAN | NODE_F0 | NODE_F2)
-#define NODE_OPI(oper, idx) (NODE_OPI_TAG | (oper << 40) | (idx))
+#define NODE_OPI(idx)       (NODE_OPI_TAG | (idx))
 #define NODE_IS_OPI(node)   (((node) & NODE_TAG_MASK) == NODE_OPI_TAG)
 
 #define NODE_OPO_TAG        (QNAN | NODE_F1 | NODE_F2)
@@ -64,10 +69,10 @@ typedef struct {
 #define NODE_NIL ((u64)0xFFFFFFFFFFFFFFFF)
 #define NODE_IS_NIL(node) (node == NODE_NIL)
 
-#define NODE_GET_VAR_IDX(node)  ((node) & (~NODE_VAR_TAG))
-#define NODE_GET_CAL_IDX(node)  ((node) & (~NODE_CAL_TAG))
-#define NODE_GET_CON_PAIR(node) ((node) & U48_MASK)
-#define NODE_GET_DUP_PAIR(node) ((node) & U48_MASK)
+#define NODE_GET_VAR_IDX(node)  ((node) & U48_MASK)
+#define NODE_GET_CAL_IDX(node)  ((node) & U48_MASK)
+#define NODE_GET_CON_AUX(node) ((node) & U48_MASK)
+#define NODE_GET_DUP_AUX(node) ((node) & U48_MASK)
 
 static inline u64 bitcast_f64_to_u64(f64 x) {
     union {
@@ -81,9 +86,7 @@ static inline u64 bitcast_f64_to_u64(f64 x) {
 #define NODE_SYM(sym)       ((sym) & U62_MASK)
 #define NODE_F64(num)       bitcast_f64_to_u64(num)
 #define NODE_IS_SYM(node)   (((node) & QNAN) != QNAN)
-
-#define NODE_FALSE NODE_SYM(0)
-#define NODE_TRUE NODE_SYM(1)
+#define NODE_GET_SYM(node)  (node) 
 
 typedef a64 ANode;
 typedef struct {
