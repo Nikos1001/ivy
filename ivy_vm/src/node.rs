@@ -3,6 +3,7 @@
 pub struct Aux(pub(crate) u64);
 
 #[must_use]
+#[repr(C)]
 pub struct Node(pub(crate) u64);
 
 extern "C" {
@@ -40,6 +41,19 @@ impl Node {
 
     pub(crate) fn opo(op: u64) -> Self {
         Self(unsafe { make_opo(op) })
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        let float = f64::from_bits(self.0);
+        if float.is_nan() {
+            None
+        } else {
+            Some(float)
+        }
+    }
+
+    pub unsafe fn copy(&self) -> Self {
+        Self(self.0)
     }
 
 }

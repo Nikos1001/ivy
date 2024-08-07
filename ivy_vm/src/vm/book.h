@@ -7,18 +7,18 @@
 #include "vm.h"
 #include "operation.h"
 
-#define DEF_MAX_VAR  65536
-#define DEF_MAX_REDX 1024
+#define DEF_MAX_VAR  (1ull << 26)
+#define DEF_MAX_REDX (1ull << 26)
+#define DEF_MAX_OPER (1ull << 26)
 #define DEF_MAX_ARGS 256
-#define DEF_MAX_OPER 4096 
 
 typedef struct {
-    u32  vars;
+    u64 vars;
 
-    u32  redx_len;
+    u64  redx_len;
     Pair redx_buf[DEF_MAX_REDX];
 
-    u32 oper_len;
+    u64 oper_len;
     u64 oper_ops[DEF_MAX_OPER];
     u32 oper_ins[DEF_MAX_OPER];
 
@@ -26,8 +26,8 @@ typedef struct {
     Node  out;
 } Def;
 
-#define BOOK_MAX_AUX (1 << 30)
-#define BOOK_MAX_DEF 65536
+#define BOOK_MAX_AUX (1ull << 30)
+#define BOOK_MAX_DEF (1ull << 16)
 
 typedef struct {
     Node aux_buf[BOOK_MAX_AUX];

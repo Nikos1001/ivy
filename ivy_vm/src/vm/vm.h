@@ -40,6 +40,10 @@ typedef struct ThreadMem {
     // reduced first.
     Pair prdx[THREAD_PRDX_SIZE];
     u32  prdx_put;
+
+    // Temporary buffers needed for instancing a definition
+    u64* instance_vars;
+    u64* instance_oper;
 } ThreadMem;
 
 #define VM_MAX_AUX_POW2 30
@@ -91,5 +95,6 @@ u64 alloc_var(NetVM* vm, ThreadMem* mem);
 void push_redx(NetVM* vm, ThreadMem* mem, Node n0, Node n1);
 
 u64 alloc_oper(NetVM* vm, ThreadMem* mem, u64 op, u64 ins);
+void free_oper(NetVM* vm, ThreadMem* mem, u64 oper);
 
 #endif

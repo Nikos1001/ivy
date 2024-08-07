@@ -13,6 +13,13 @@ typedef struct {
     Node out;
 
     a64  n_unlinked;
+
+    bool killed;
 } Operation;
+
+struct NetVM;
+struct ThreadMem;
+
+void perform_operation(struct NetVM* vm, struct ThreadMem* mem, u64 op_idx);
 
 #endif

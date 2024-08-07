@@ -1,5 +1,6 @@
 
 #include "vm.h"
+#include "book.h"
 
 #define INITIAL_PAIR_CAPACITY 128
 
@@ -24,7 +25,10 @@ void vm_init(NetVM* vm) {
             .oper_last = (tid + 1) * OPER_BLOCK_SIZE,
             .oper_free = UINT64_MAX,
 
-            .prdx_put = 0
+            .prdx_put = 0,
+            
+            .instance_vars = malloc(sizeof(u64) * DEF_MAX_VAR),
+            .instance_oper = malloc(sizeof(u64) * DEF_MAX_OPER)
         };
 
         for(u32 i = 0; i < 256; i++) {
@@ -182,6 +186,8 @@ static inline void init_oper(NetVM* vm, ThreadMem* mem, u64 oper_idx, u64 op, u6
     Operation* oper = &vm->oper_buf[oper_idx];
     oper->op = op;
     oper->ins = alloc_aux(vm, mem, ins);
+    Node* ins_aux = get_aux(vm, oper->ins);
+    oper->killed = false;
     atomic_store_explicit(&oper->n_unlinked, ins + 1, memory_order_relaxed);
 }
 
@@ -201,7 +207,7 @@ u64 alloc_oper(NetVM* vm, ThreadMem* mem, u64 op, u64 ins) {
     return oper_idx;
 }
 
-static inline void free_oper(NetVM* vm, ThreadMem* mem, u64 oper) {
+void free_oper(NetVM* vm, ThreadMem* mem, u64 oper) {
     Operation* op = &vm->oper_buf[oper];
     op->op = mem->oper_free;
     mem->oper_free = oper;
@@ -238,25 +244,6 @@ void dump_thread_state(NetVM* vm, ThreadMem* mem) {
 }
 
 // ====== EXECUTION =========
-
-static inline void perform_operation(NetVM* vm, ThreadMem* mem, u64 op_idx) {
-    Node out;
-    Operation* op = &vm->oper_buf[op_idx];
-    if(op->op == OP_ADD) {
-        f64 sum = 0.0;
-        u64 ins = AUX_SIZE(op->ins);
-        Node* vals = get_aux(vm, op->ins);
-        for(u64 i = 0; i < ins; i++) {
-            sum += bitcast_u64_to_f64(vals[i]); 
-        }
-        out = NODE_F64(sum);
-    }
-
-    push_redx(vm, mem, out, op->out);
-
-    free_aux(vm, mem, op->ins);
-    free_oper(vm, mem, op_idx);
-}
 
 void thread_run(NetVM* vm, ThreadMem* mem) {
 
@@ -451,10 +438,20 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
         }
         DISPATCH();
     do_kili:
-        // TODO: kill operation input
+        if(NODE_IS_OPI(redex.n1)) {
+            swap_nodes(&redex.n0, &redex.n1);
+        }
+        op = NODE_GET_OPI_OP(redex.n0);
+        operation = &vm->oper_buf[op];
+        operation->killed = true;
         DISPATCH();
     do_kilo:
-        // TODO: kill operation input
+        if(NODE_IS_OPO(redex.n1)) {
+            swap_nodes(&redex.n0, &redex.n1);
+        }
+        op = NODE_GET_OPO_OP(redex.n0);
+        operation = &vm->oper_buf[op];
+        operation->killed = true;
         DISPATCH();
     do_halt:
         return;

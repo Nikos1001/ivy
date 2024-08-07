@@ -7,6 +7,7 @@ fn main() {
         .file("src/vm/vm.c") 
         .file("src/vm/node.c") 
         .file("src/vm/book.c") 
+        .file("src/vm/operation.c") 
         .file("src/vm/run.c") 
         .try_compile("vm");
 

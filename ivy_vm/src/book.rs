@@ -1,5 +1,5 @@
 
-use std::os::raw::c_void;
+use std::ffi::c_void;
 use crate::node::{Aux, Node};
 
 pub struct Book {
@@ -13,7 +13,8 @@ pub struct Def<'a> {
 }
 
 pub enum Operation {
-    Add
+    Add,
+    Native(unsafe fn(u64, *const Node) -> Node)
 }
 
 impl Operation {
@@ -21,6 +22,10 @@ impl Operation {
     fn to_op_code(&self) -> u64 {
         match self {
             Operation::Add => 0,
+            Operation::Native(func) => {
+                let fn_addr = *func as *const unsafe fn(u64, *const Node) -> Node as u64;
+                (1u64 << 63) | fn_addr
+            }
         }
     }
 
