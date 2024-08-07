@@ -12,6 +12,20 @@ pub struct Def<'a> {
     def: *mut c_void
 }
 
+pub enum Operation {
+    Add
+}
+
+impl Operation {
+
+    fn to_op_code(&self) -> u64 {
+        match self {
+            Operation::Add => 0,
+        }
+    }
+
+}
+
 pub struct DefID(u64);
 
 extern "C" {
@@ -24,6 +38,7 @@ extern "C" {
     fn def_set_out(def: *mut c_void, node: u64);
     fn def_add_var(def: *mut c_void) -> u64;
     fn def_add_redex(def: *mut c_void, a: u64, b: u64);
+    fn def_add_oper(def: *mut c_void, op: u64, ins: u32) -> u64;
 
 }
 
@@ -101,6 +116,15 @@ impl<'a> Def<'a> {
 
     pub fn dup(&mut self, nodes: &[Node]) -> Node {
         self.book.dup(nodes)
+    }
+
+    pub fn add_operation(&mut self, op: Operation, ins: Vec<Node>) -> Node {
+        assert!(ins.len() <= 256, "operation can have at most 256 inputs.");
+        let op_idx = unsafe { def_add_oper(self.def, op.to_op_code(), ins.len() as u32) }; 
+        for (idx, node) in ins.into_iter().enumerate() {
+            self.add_redex(Node::opi(op_idx, idx as u64), node);
+        }
+        Node::opo(op_idx)
     }
 
 }

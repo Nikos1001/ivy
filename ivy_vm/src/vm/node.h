@@ -55,11 +55,11 @@ typedef u64 Aux;
 #define NODE_IS_ERA(node)   (node == NODE_ERA) 
 
 #define NODE_OPI_TAG        (QNAN | NODE_F0 | NODE_F2)
-#define NODE_OPI(idx)       (NODE_OPI_TAG | (idx))
+#define NODE_OPI(op, idx)   (NODE_OPI_TAG | (op) | ((idx) << 40))
 #define NODE_IS_OPI(node)   (((node) & NODE_TAG_MASK) == NODE_OPI_TAG)
 
 #define NODE_OPO_TAG        (QNAN | NODE_F1 | NODE_F2)
-#define NODE_OPO(idx)       (NODE_OPO_TAG | (idx))
+#define NODE_OPO(op)        (NODE_OPO_TAG | (op))
 #define NODE_IS_OPO(node)   (((node) & NODE_TAG_MASK) == NODE_OPO_TAG)
 
 #define NODE_SWI_TAG        (QNAN | NODE_F0 | NODE_F1 | NODE_F2)
@@ -71,8 +71,11 @@ typedef u64 Aux;
 
 #define NODE_GET_VAR_IDX(node)  ((node) & U48_MASK)
 #define NODE_GET_CAL_IDX(node)  ((node) & U48_MASK)
-#define NODE_GET_CON_AUX(node) ((node) & U48_MASK)
-#define NODE_GET_DUP_AUX(node) ((node) & U48_MASK)
+#define NODE_GET_CON_AUX(node)  ((node) & U48_MASK)
+#define NODE_GET_DUP_AUX(node)  ((node) & U48_MASK)
+#define NODE_GET_OPI_OP(node)   ((node) & 0xFFFFFFFFFF)
+#define NODE_GET_OPI_IDX(node)  ((((node) & U48_MASK) >> 40) & 0xFF)
+#define NODE_GET_OPO_OP(node)   ((node) & U48_MASK)
 
 static inline u64 bitcast_f64_to_u64(f64 x) {
     union {
@@ -81,6 +84,15 @@ static inline u64 bitcast_f64_to_u64(f64 x) {
     } temp;
     temp.f = x;
     return temp.u;
+}
+
+static inline f64 bitcast_u64_to_f64(u64 x) {
+    union {
+        f64 f;
+        u64 u;
+    } temp;
+    temp.u = x;
+    return temp.f;
 }
 
 #define NODE_SYM(sym)       ((sym) & U62_MASK)

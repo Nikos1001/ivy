@@ -20,6 +20,10 @@ void vm_init(NetVM* vm) {
             .redx_base = &vm->redx_buf[tid * REDX_BLOCK_SIZE],
             .redx_put = 0,
 
+            .oper_curr = tid * OPER_BLOCK_SIZE,
+            .oper_last = (tid + 1) * OPER_BLOCK_SIZE,
+            .oper_free = UINT64_MAX,
+
             .prdx_put = 0
         };
 
@@ -174,6 +178,35 @@ static inline Pair pop_redx(NetVM* vm, ThreadMem* mem) {
     }
 }
 
+static inline void init_oper(NetVM* vm, ThreadMem* mem, u64 oper_idx, u64 op, u64 ins) {
+    Operation* oper = &vm->oper_buf[oper_idx];
+    oper->op = op;
+    oper->ins = alloc_aux(vm, mem, ins);
+    atomic_store_explicit(&oper->n_unlinked, ins + 1, memory_order_relaxed);
+}
+
+u64 alloc_oper(NetVM* vm, ThreadMem* mem, u64 op, u64 ins) {
+    if(mem->oper_free != UINT64_MAX) {
+        u64 oper_idx = mem->oper_free;
+        mem->oper_free = vm->oper_buf[oper_idx].op;
+        init_oper(vm, mem, oper_idx, op, ins);
+        return oper_idx;
+    }
+    if(mem->oper_curr == mem->oper_last) {
+        vm_panic(vm, mem, "OPERATION SPACE EXHAUSTED");
+    }
+    mem->oper_curr++;
+    u64 oper_idx = mem->oper_curr - 1;
+    init_oper(vm, mem, oper_idx, op, ins);
+    return oper_idx;
+}
+
+static inline void free_oper(NetVM* vm, ThreadMem* mem, u64 oper) {
+    Operation* op = &vm->oper_buf[oper];
+    op->op = mem->oper_free;
+    mem->oper_free = oper;
+}
+
 // ====== DEBUG =============
 
 void dump_thread_state(NetVM* vm, ThreadMem* mem) {
@@ -206,6 +239,25 @@ void dump_thread_state(NetVM* vm, ThreadMem* mem) {
 
 // ====== EXECUTION =========
 
+static inline void perform_operation(NetVM* vm, ThreadMem* mem, u64 op_idx) {
+    Node out;
+    Operation* op = &vm->oper_buf[op_idx];
+    if(op->op == OP_ADD) {
+        f64 sum = 0.0;
+        u64 ins = AUX_SIZE(op->ins);
+        Node* vals = get_aux(vm, op->ins);
+        for(u64 i = 0; i < ins; i++) {
+            sum += bitcast_u64_to_f64(vals[i]); 
+        }
+        out = NODE_F64(sum);
+    }
+
+    push_redx(vm, mem, out, op->out);
+
+    free_aux(vm, mem, op->ins);
+    free_oper(vm, mem, op_idx);
+}
+
 void thread_run(NetVM* vm, ThreadMem* mem) {
 
     // The VM uses computed goto for its rule dispatch
@@ -213,15 +265,15 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
     // Not sure if this makes a big difference for performance, but I couldn't resist
     const void* dispatch_table[10][10] = {
         //             VAR        CAL        CON        DUP        ERA        OPI        OPO        SWI        SYM        NIL 
-        /* VAR */ { &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_halt },
-        /* CAL */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* CON */ { &&do_link, &&do_void, &&do_anni, &&do_comm, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* DUP */ { &&do_link, &&do_void, &&do_comm, &&do_anni, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* ERA */ { &&do_link, &&do_void, &&do_eras, &&do_eras, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* OPI */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* OPO */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* SWI */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
-        /* SYM */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_void, &&do_halt },
+        /* VAR */ { &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_link, &&do_outl, &&do_link, &&do_link, &&do_halt },
+        /* CAL */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_inpl, &&do_outl, &&do_void, &&do_void, &&do_halt },
+        /* CON */ { &&do_link, &&do_void, &&do_anni, &&do_comm, &&do_eras, &&do_inpl, &&do_outl, &&do_void, &&do_void, &&do_halt },
+        /* DUP */ { &&do_link, &&do_void, &&do_comm, &&do_anni, &&do_eras, &&do_inpl, &&do_outl, &&do_void, &&do_void, &&do_halt },
+        /* ERA */ { &&do_link, &&do_void, &&do_eras, &&do_eras, &&do_void, &&do_kili, &&do_kilo, &&do_void, &&do_void, &&do_halt },
+        /* OPI */ { &&do_link, &&do_inpl, &&do_inpl, &&do_inpl, &&do_kili, &&do_halt, &&do_outl, &&do_inpl, &&do_inpl, &&do_halt },
+        /* OPO */ { &&do_outl, &&do_outl, &&do_outl, &&do_outl, &&do_kilo, &&do_outl, &&do_halt, &&do_outl, &&do_outl, &&do_halt },
+        /* SWI */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_inpl, &&do_outl, &&do_void, &&do_void, &&do_halt },
+        /* SYM */ { &&do_link, &&do_void, &&do_void, &&do_void, &&do_void, &&do_inpl, &&do_outl, &&do_void, &&do_void, &&do_halt },
         /* NIL */ { &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt, &&do_halt },
     };
 
@@ -256,6 +308,10 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
     Node* aux_nodes;
     Node* aux0_nodes;
     Node* aux1_nodes;
+
+    u64 op, idx;
+    Operation* operation;
+    Node* inputs;
 
     do_void:
         DISPATCH();
@@ -368,6 +424,37 @@ void thread_run(NetVM* vm, ThreadMem* mem) {
 
         free_aux(vm, mem, aux);
 
+        DISPATCH();
+    do_inpl:
+        if(NODE_IS_OPI(redex.n1)) {
+            swap_nodes(&redex.n0, &redex.n1);
+        }
+        op = NODE_GET_OPI_OP(redex.n0);
+        idx = NODE_GET_OPI_IDX(redex.n0);
+        operation = &vm->oper_buf[op];
+        inputs = get_aux(vm, operation->ins);
+        inputs[idx] = redex.n1;
+        if(atomic_fetch_sub_explicit(&operation->n_unlinked, 1, memory_order_relaxed) == 1) {
+            perform_operation(vm, mem, op);
+        }
+        DISPATCH();
+    do_outl:
+        if(NODE_IS_OPO(redex.n1)) {
+            swap_nodes(&redex.n0, &redex.n1);
+        }
+        op = NODE_GET_OPO_OP(redex.n0);
+        operation = &vm->oper_buf[op];
+        inputs = get_aux(vm, operation->ins);
+        operation->out = redex.n1;
+        if(atomic_fetch_sub_explicit(&operation->n_unlinked, 1, memory_order_relaxed) == 1) {
+            perform_operation(vm, mem, op);
+        }
+        DISPATCH();
+    do_kili:
+        // TODO: kill operation input
+        DISPATCH();
+    do_kilo:
+        // TODO: kill operation input
         DISPATCH();
     do_halt:
         return;

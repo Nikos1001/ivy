@@ -11,6 +11,8 @@ extern "C" {
     fn make_con(aux: u64) -> u64;
     fn make_dup(aux: u64) -> u64;
     fn make_era() -> u64;
+    fn make_opi(op: u64, idx: u64) -> u64;
+    fn make_opo(op: u64) -> u64;
 
 }
 
@@ -32,6 +34,13 @@ impl Node {
         Self(unsafe { make_era() })
     }
 
+    pub(crate) fn opi(op: u64, idx: u64) -> Self {
+        Self(unsafe { make_opi(op, idx) })
+    }
+
+    pub(crate) fn opo(op: u64) -> Self {
+        Self(unsafe { make_opo(op) })
+    }
 
 }
 

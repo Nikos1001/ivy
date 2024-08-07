@@ -1,5 +1,5 @@
 
-use ivy_vm::{book::Book, node::Node, run_vm};
+use ivy_vm::{book::{Book, Operation}, run_vm};
 
 fn main() {
 
@@ -7,13 +7,16 @@ fn main() {
     let main = book.add_def();
 
     let mut main = book.get_def(main);
-    main.set_out(42.0.into());
 
-    let (v0, v1) = main.add_var();
-    let con = main.con(&[v0, Node::era()]);
-    let dup = main.dup(&[v1, Node::era()]);
-    main.add_redex(con, dup);
-
+    let sum = main.add_operation(
+        Operation::Add,
+        vec![2.0.into(), 3.0.into()]
+    );
+    let sum2 = main.add_operation(
+        Operation::Add,
+        vec![5.0.into(), sum]
+    );
+    main.set_out(sum2);
 
     run_vm(book);
 

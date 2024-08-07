@@ -40,3 +40,11 @@ Node make_dup(Aux aux) {
 Node make_era() {
     return NODE_ERA;
 }
+
+Node make_opi(u64 op, u64 idx) {
+    return NODE_OPI(op, idx);
+}
+
+Node make_opo(u64 op) {
+    return NODE_OPO(op);
+}

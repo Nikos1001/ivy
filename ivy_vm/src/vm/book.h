@@ -5,16 +5,22 @@
 #include "common.h"
 #include "node.h"
 #include "vm.h"
+#include "operation.h"
 
 #define DEF_MAX_VAR  65536
 #define DEF_MAX_REDX 1024
 #define DEF_MAX_ARGS 256
+#define DEF_MAX_OPER 4096 
 
 typedef struct {
     u32  vars;
 
     u32  redx_len;
     Pair redx_buf[DEF_MAX_REDX];
+
+    u32 oper_len;
+    u64 oper_ops[DEF_MAX_OPER];
+    u32 oper_ins[DEF_MAX_OPER];
 
     Node  args[DEF_MAX_ARGS];
     Node  out;
